@@ -4,6 +4,7 @@ from gram_diff_mimo.mimo.channel import generate_rayleigh_channel, mimo_observat
 from gram_diff_mimo.mimo.estimators import (
     angular_pilot_observation,
     angular_receive_gram,
+    gram_diff_channel_estimate,
     estimate_receive_gram_from_data,
     least_squares_from_pilots,
     variance_normalize_angular_observation
@@ -13,6 +14,12 @@ from gram_diff_mimo.diffusion.schedules import (
 alpha_bar_from_alpha,
 snr_matched_timestep,
 )
+
+
+class ZeroNoiseDenoiser:
+    def predict_noise(self, H_tilde_t, timestep):
+        return np.zeros_like(H_tilde_t)
+
 
 def test_least_squares_recovers_channel_with_identity_pilots_zero_noise():
     H = generate_rayleigh_channel(4, 4)
@@ -100,3 +107,23 @@ def test_variance_normalize_angular_observation():
         H_tilde_tstar,
         0.5 * Y_tilde,
     )
+
+
+def test_gram_diff_channel_estimate_runs_end_to_end_with_zero_noise_denoiser():
+    H = generate_rayleigh_channel(4, 4)
+    X_p = identity_pilots(4)
+    Y_p, _ = mimo_observation(H, X_p, noise_variance=0.0)
+
+    H_hat = gram_diff_channel_estimate(
+        Y_p=Y_p,
+        Y_d=None,
+        X_p=X_p,
+        noise_variance=3.0,
+        denoiser=ZeroNoiseDenoiser(),
+        alpha_bar=np.array([0.25]),
+        betas=np.array([0.75]),
+        lambda_like=0.0,
+        lambda_gram=0.0,
+    )
+
+    assert np.allclose(H_hat, H)

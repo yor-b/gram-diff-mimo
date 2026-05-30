@@ -4,6 +4,11 @@ from __future__ import annotations
 
 import numpy as np
 
+from gram_diff_mimo.diffusion.denoiser import DiffusionNoisePredictor
+from gram_diff_mimo.diffusion.sampler import gram_diff_guided_sample
+from gram_diff_mimo.diffusion.schedules import snr_matched_timestep
+
+
 def least_squares_from_pilots(
     Y_p: np.ndarray,
     X_p: np.ndarray,
@@ -101,3 +106,105 @@ def variance_normalize_angular_observation(
     H_hat_tilde_tstar = (1 + sigma^2)^(-1/2) Y_tilde
     """
     return Y_tilde / np.sqrt(1.0 + noise_variance)
+
+
+def diffusion_guidance_weights(
+    betas: np.ndarray,
+    *,
+    lambda_like: float = 0.0,
+    lambda_gram: float = 0.0,
+    observation_snr: float | None = None,
+    likelihood_gate_snr0: float | None = None,
+    likelihood_gate_delta: float = 1.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build per-step guidance weights used by the GRAM-DIFF update."""
+    betas = np.asarray(betas, dtype=np.float64)
+    like_gate = 1.0
+    if observation_snr is not None and likelihood_gate_snr0 is not None:
+        like_gate = 1.0 / (
+            1.0
+            + np.exp(
+                -(
+                    observation_snr
+                    - likelihood_gate_snr0
+                )
+                / likelihood_gate_delta
+            )
+        )
+
+    like_weights = lambda_like * betas * like_gate
+    gram_weights = lambda_gram * np.sqrt(betas)
+    return like_weights, gram_weights
+
+
+def gram_diff_channel_estimate(
+    Y_p: np.ndarray,
+    Y_d: np.ndarray | None,
+    X_p: np.ndarray,
+    noise_variance: float,
+    denoiser: DiffusionNoisePredictor,
+    alpha_bar: np.ndarray,
+    betas: np.ndarray,
+    *,
+    lambda_like: float = 0.0,
+    lambda_gram: float = 0.0,
+    R_tilde_hat: np.ndarray | None = None,
+    project_gram: bool = True,
+    gram_clip_norm: float | np.ndarray | None = None,
+    likelihood_gate_snr0: float | None = None,
+    likelihood_gate_delta: float = 1.0,
+) -> np.ndarray:
+    """Estimate a MIMO channel using pretrained GRAM-DIFF.
+
+    This is the end-to-end estimator from observations:
+    pilot decorrelation, angular-domain SNR-matched initialization, optional
+    data-aided Gram estimation, guided reverse diffusion, and inverse FFT.
+    """
+    if noise_variance <= 0.0:
+        raise ValueError("noise_variance must be positive for SNR matching and likelihood guidance.")
+
+    Y_tilde = angular_pilot_observation(Y_p=Y_p, X_p=X_p)
+    H_tilde_start = variance_normalize_angular_observation(
+        Y_tilde=Y_tilde,
+        noise_variance=noise_variance,
+    )
+
+    if R_tilde_hat is None:
+        if Y_d is None:
+            R_tilde_hat = np.zeros((Y_p.shape[0], Y_p.shape[0]), dtype=Y_p.dtype)
+            lambda_gram = 0.0
+        else:
+            R_tilde_hat = estimate_angular_receive_gram_from_data(
+                Y_d=Y_d,
+                noise_variance=noise_variance,
+                project=project_gram,
+            )
+
+    observation_snr = 1.0 / noise_variance
+    t_start = snr_matched_timestep(
+        observation_snr=observation_snr,
+        alpha_bar=np.asarray(alpha_bar),
+    )
+    lambda_like_t, lambda_gram_t = diffusion_guidance_weights(
+        betas=betas,
+        lambda_like=lambda_like,
+        lambda_gram=lambda_gram,
+        observation_snr=observation_snr,
+        likelihood_gate_snr0=likelihood_gate_snr0,
+        likelihood_gate_delta=likelihood_gate_delta,
+    )
+
+    H_tilde_hat = gram_diff_guided_sample(
+        H_tilde_start=H_tilde_start,
+        Y_tilde=Y_tilde,
+        R_tilde_hat=R_tilde_hat,
+        denoiser=denoiser,
+        alpha_bar=alpha_bar,
+        noise_variance=noise_variance,
+        t_start=t_start,
+        lambda_like=lambda_like_t,
+        lambda_gram=lambda_gram_t,
+        gram_clip_norm=gram_clip_norm,
+    )
+
+    return np.fft.ifft2(H_tilde_hat, norm="ortho")

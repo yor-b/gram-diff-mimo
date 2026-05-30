@@ -1,0 +1,234 @@
+"""Paper-structured GRAM-DIFF evaluation harness.
+
+This compares the estimator variants used in the GRAM-DIFF paper while keeping
+the paper's guidance schedule forms fixed:
+
+    lambda_like,t = lambda_like * beta_t * SNR_gate
+    lambda_gram,t = lambda_gram * sqrt(beta_t)
+
+The channel generator here is the repo's simple Rayleigh simulator, so this is a
+sanity/tuning harness rather than a reproduction of the paper's 3GPP or QuaDRiGa
+experiments.
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+from pathlib import Path
+
+import numpy as np
+
+from gram_diff_mimo.diffusion import load_fesl_pretrained_denoiser
+from gram_diff_mimo.mimo.channel import generate_rayleigh_channel, mimo_observation
+from gram_diff_mimo.mimo.estimators import (
+    angular_receive_gram,
+    gram_diff_channel_estimate,
+    least_squares_from_pilots,
+)
+from gram_diff_mimo.mimo.metrics import nmse
+from gram_diff_mimo.mimo.pilots import identity_pilots
+
+
+def parse_csv_floats(value: str) -> list[float]:
+    return [float(item.strip()) for item in value.split(",") if item.strip()]
+
+
+def parse_csv_ints(value: str) -> list[int]:
+    return [int(item.strip()) for item in value.split(",") if item.strip()]
+
+
+def data_symbols(n_tx: int, n_data: int) -> np.ndarray:
+    return (
+        np.random.randn(n_tx, n_data)
+        + 1j * np.random.randn(n_tx, n_data)
+    ) / np.sqrt(2.0)
+
+
+def estimate_variants(
+    *,
+    H: np.ndarray,
+    Y_p: np.ndarray,
+    Y_d: np.ndarray,
+    X_p: np.ndarray,
+    noise_variance: float,
+    denoiser,
+    lambda_like: float,
+    lambda_gram: float,
+    gram_clip_norm: float,
+    likelihood_gate_snr0: float | None,
+    likelihood_gate_delta: float,
+) -> dict[str, float]:
+    R_tilde_oracle = angular_receive_gram(H @ H.conj().T)
+
+    variants = {
+        "LS": least_squares_from_pilots(Y_p=Y_p, X_p=X_p),
+        "DM": gram_diff_channel_estimate(
+            Y_p=Y_p,
+            Y_d=None,
+            X_p=X_p,
+            noise_variance=noise_variance,
+            denoiser=denoiser,
+            alpha_bar=denoiser.alpha_bar,
+            betas=denoiser.betas,
+        ),
+        "DM+Likelihood": gram_diff_channel_estimate(
+            Y_p=Y_p,
+            Y_d=None,
+            X_p=X_p,
+            noise_variance=noise_variance,
+            denoiser=denoiser,
+            alpha_bar=denoiser.alpha_bar,
+            betas=denoiser.betas,
+            lambda_like=lambda_like,
+            likelihood_gate_snr0=likelihood_gate_snr0,
+            likelihood_gate_delta=likelihood_gate_delta,
+        ),
+        "DM+Gram(est)": gram_diff_channel_estimate(
+            Y_p=Y_p,
+            Y_d=Y_d,
+            X_p=X_p,
+            noise_variance=noise_variance,
+            denoiser=denoiser,
+            alpha_bar=denoiser.alpha_bar,
+            betas=denoiser.betas,
+            lambda_gram=lambda_gram,
+            gram_clip_norm=gram_clip_norm,
+        ),
+        "DM+Gram(oracle)": gram_diff_channel_estimate(
+            Y_p=Y_p,
+            Y_d=None,
+            X_p=X_p,
+            noise_variance=noise_variance,
+            denoiser=denoiser,
+            alpha_bar=denoiser.alpha_bar,
+            betas=denoiser.betas,
+            lambda_gram=lambda_gram,
+            R_tilde_hat=R_tilde_oracle,
+            gram_clip_norm=gram_clip_norm,
+        ),
+        "Joint(est)": gram_diff_channel_estimate(
+            Y_p=Y_p,
+            Y_d=Y_d,
+            X_p=X_p,
+            noise_variance=noise_variance,
+            denoiser=denoiser,
+            alpha_bar=denoiser.alpha_bar,
+            betas=denoiser.betas,
+            lambda_like=lambda_like,
+            lambda_gram=lambda_gram,
+            gram_clip_norm=gram_clip_norm,
+            likelihood_gate_snr0=likelihood_gate_snr0,
+            likelihood_gate_delta=likelihood_gate_delta,
+        ),
+        "Joint(oracle)": gram_diff_channel_estimate(
+            Y_p=Y_p,
+            Y_d=None,
+            X_p=X_p,
+            noise_variance=noise_variance,
+            denoiser=denoiser,
+            alpha_bar=denoiser.alpha_bar,
+            betas=denoiser.betas,
+            lambda_like=lambda_like,
+            lambda_gram=lambda_gram,
+            R_tilde_hat=R_tilde_oracle,
+            gram_clip_norm=gram_clip_norm,
+            likelihood_gate_snr0=likelihood_gate_snr0,
+            likelihood_gate_delta=likelihood_gate_delta,
+        ),
+    }
+    return {name: nmse(H, H_hat) for name, H_hat in variants.items()}
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model-dir", default="best_models_fesl_dm_paper/3gpp_path=3")
+    parser.add_argument("--device", default="auto")
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--snr-db", default="-5,0,5")
+    parser.add_argument("--n-data", default="200,2000")
+    parser.add_argument("--n-trials", type=int, default=5)
+    parser.add_argument("--lambda-like", type=float, default=0.0)
+    parser.add_argument("--lambda-gram", type=float, default=0.01)
+    parser.add_argument("--gram-clip-norm", type=float, default=0.5)
+    parser.add_argument("--likelihood-gate-snr0", type=float, default=None)
+    parser.add_argument("--likelihood-gate-delta", type=float, default=1.0)
+    parser.add_argument("--output-csv", default=None)
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    np.random.seed(args.seed)
+
+    snr_db_values = parse_csv_floats(args.snr_db)
+    n_data_values = parse_csv_ints(args.n_data)
+    denoiser = load_fesl_pretrained_denoiser(args.model_dir, device=args.device)
+
+    rows: list[dict[str, str | int | float]] = []
+    n_rx, n_tx = 64, 16
+    X_p = identity_pilots(n_tx)
+
+    for snr_db in snr_db_values:
+        noise_variance = 10.0 ** (-snr_db / 10.0)
+        for n_data in n_data_values:
+            totals: dict[str, list[float]] = {}
+            for _ in range(args.n_trials):
+                H = generate_rayleigh_channel(n_rx=n_rx, n_tx=n_tx)
+                Y_p, _ = mimo_observation(
+                    h=H,
+                    x=X_p,
+                    noise_variance=noise_variance,
+                )
+                X_d = data_symbols(n_tx=n_tx, n_data=n_data)
+                Y_d, _ = mimo_observation(
+                    h=H,
+                    x=X_d,
+                    noise_variance=noise_variance,
+                )
+                trial = estimate_variants(
+                    H=H,
+                    Y_p=Y_p,
+                    Y_d=Y_d,
+                    X_p=X_p,
+                    noise_variance=noise_variance,
+                    denoiser=denoiser,
+                    lambda_like=args.lambda_like,
+                    lambda_gram=args.lambda_gram,
+                    gram_clip_norm=args.gram_clip_norm,
+                    likelihood_gate_snr0=args.likelihood_gate_snr0,
+                    likelihood_gate_delta=args.likelihood_gate_delta,
+                )
+                for name, value in trial.items():
+                    totals.setdefault(name, []).append(value)
+
+            for name, values in totals.items():
+                row = {
+                    "snr_db": snr_db,
+                    "n_data": n_data,
+                    "variant": name,
+                    "mean_nmse": float(np.mean(values)),
+                    "std_nmse": float(np.std(values)),
+                    "n_trials": args.n_trials,
+                }
+                rows.append(row)
+                print(
+                    f"SNR={snr_db:>5g} dB  Nd={n_data:>5d}  "
+                    f"{name:<15} mean={row['mean_nmse']:.6g} std={row['std_nmse']:.3g}"
+                )
+
+    if args.output_csv is not None:
+        output_path = Path(args.output_csv)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(
+                f,
+                fieldnames=["snr_db", "n_data", "variant", "mean_nmse", "std_nmse", "n_trials"],
+            )
+            writer.writeheader()
+            writer.writerows(rows)
+        print(f"Wrote {output_path}")
+
+
+if __name__ == "__main__":
+    main()
