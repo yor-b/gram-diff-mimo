@@ -124,18 +124,24 @@ def estimate_variants(
 ) -> dict[str, np.ndarray]:
     R_tilde_oracle = angular_receive_gram(H @ H.conj().swapaxes(-1, -2))
 
-    variants = {
-        "LS": least_squares_from_pilots(Y_p=Y_p, X_p=X_p),
-        "DM": gram_diff_channel_estimate(
-            Y_p=Y_p,
-            Y_d=None,
-            X_p=X_p,
-            noise_variance=noise_variance,
-            denoiser=denoiser,
-            alpha_bar=denoiser.alpha_bar,
-            betas=denoiser.betas,
-        ),
-        "DM+Likelihood": gram_diff_channel_estimate(
+    variants: dict[str, np.ndarray] = {}
+    variants["LS"] = nmse_per_sample(H, least_squares_from_pilots(Y_p=Y_p, X_p=X_p))
+
+    H_dm = gram_diff_channel_estimate(
+        Y_p=Y_p,
+        Y_d=None,
+        X_p=X_p,
+        noise_variance=noise_variance,
+        denoiser=denoiser,
+        alpha_bar=denoiser.alpha_bar,
+        betas=denoiser.betas,
+    )
+    variants["DM"] = nmse_per_sample(H, H_dm)
+
+    if lambda_like == 0.0:
+        variants["DM+Likelihood"] = variants["DM"].copy()
+    else:
+        H_like = gram_diff_channel_estimate(
             Y_p=Y_p,
             Y_d=None,
             X_p=X_p,
@@ -146,8 +152,14 @@ def estimate_variants(
             lambda_like=lambda_like,
             likelihood_gate_snr0=likelihood_gate_snr0,
             likelihood_gate_delta=likelihood_gate_delta,
-        ),
-        "DM+Gram(est)": gram_diff_channel_estimate(
+        )
+        variants["DM+Likelihood"] = nmse_per_sample(H, H_like)
+
+    if lambda_gram == 0.0:
+        variants["DM+Gram(est)"] = variants["DM"].copy()
+        variants["DM+Gram(oracle)"] = variants["DM"].copy()
+    else:
+        H_gram_est = gram_diff_channel_estimate(
             Y_p=Y_p,
             Y_d=Y_d,
             X_p=X_p,
@@ -157,8 +169,10 @@ def estimate_variants(
             betas=denoiser.betas,
             lambda_gram=lambda_gram,
             gram_clip_norm=gram_clip_norm,
-        ),
-        "DM+Gram(oracle)": gram_diff_channel_estimate(
+        )
+        variants["DM+Gram(est)"] = nmse_per_sample(H, H_gram_est)
+
+        H_gram_oracle = gram_diff_channel_estimate(
             Y_p=Y_p,
             Y_d=None,
             X_p=X_p,
@@ -169,8 +183,17 @@ def estimate_variants(
             lambda_gram=lambda_gram,
             R_tilde_hat=R_tilde_oracle,
             gram_clip_norm=gram_clip_norm,
-        ),
-        "Joint(est)": gram_diff_channel_estimate(
+        )
+        variants["DM+Gram(oracle)"] = nmse_per_sample(H, H_gram_oracle)
+
+    if lambda_like == 0.0:
+        variants["Joint(est)"] = variants["DM+Gram(est)"].copy()
+        variants["Joint(oracle)"] = variants["DM+Gram(oracle)"].copy()
+    elif lambda_gram == 0.0:
+        variants["Joint(est)"] = variants["DM+Likelihood"].copy()
+        variants["Joint(oracle)"] = variants["DM+Likelihood"].copy()
+    else:
+        H_joint_est = gram_diff_channel_estimate(
             Y_p=Y_p,
             Y_d=Y_d,
             X_p=X_p,
@@ -183,8 +206,10 @@ def estimate_variants(
             gram_clip_norm=gram_clip_norm,
             likelihood_gate_snr0=likelihood_gate_snr0,
             likelihood_gate_delta=likelihood_gate_delta,
-        ),
-        "Joint(oracle)": gram_diff_channel_estimate(
+        )
+        variants["Joint(est)"] = nmse_per_sample(H, H_joint_est)
+
+        H_joint_oracle = gram_diff_channel_estimate(
             Y_p=Y_p,
             Y_d=None,
             X_p=X_p,
@@ -198,9 +223,10 @@ def estimate_variants(
             gram_clip_norm=gram_clip_norm,
             likelihood_gate_snr0=likelihood_gate_snr0,
             likelihood_gate_delta=likelihood_gate_delta,
-        ),
-    }
-    return {name: nmse_per_sample(H, H_hat) for name, H_hat in variants.items()}
+        )
+        variants["Joint(oracle)"] = nmse_per_sample(H, H_joint_oracle)
+
+    return variants
 
 
 def parse_args() -> argparse.Namespace:
@@ -228,7 +254,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--plot-dir", default=None)
     parser.add_argument(
         "--progress",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help="Show progress bar for batched evaluation.",
     )
     return parser.parse_args()
@@ -242,6 +269,7 @@ def main() -> None:
 
     snr_db_values = snr_grid_from_args(args)
     n_data_values = parse_csv_ints(args.n_data)
+    print(f"Loading denoiser from {args.model_dir}...", flush=True)
     denoiser = load_fesl_pretrained_denoiser(args.model_dir, device=args.device)
 
     rows: list[dict[str, str | int | float]] = []
@@ -252,8 +280,13 @@ def main() -> None:
         * len(n_data_values)
         * ((args.n_trials + args.batch_size - 1) // args.batch_size)
     )
+    print(
+        f"Evaluating {len(snr_db_values)} SNR point(s), {len(n_data_values)} data setting(s), "
+        f"{args.n_trials} trial(s) each on {denoiser.device}. Total batches: {total_batches}.",
+        flush=True,
+    )
 
-    with tqdm(total=total_batches, unit="batch", disable=not args.progress) as progress:
+    with tqdm(total=total_batches, unit="batch", disable=not args.progress, dynamic_ncols=True) as progress:
         for snr_db in snr_db_values:
             noise_variance = 10.0 ** (-snr_db / 10.0)
             for n_data in n_data_values:
@@ -297,20 +330,20 @@ def main() -> None:
                         totals.setdefault(name, []).extend(value.tolist())
                     progress.update(1)
 
-            for name, values in totals.items():
-                row = {
-                    "snr_db": snr_db,
-                    "n_data": n_data,
-                    "variant": name,
-                    "mean_nmse": float(np.mean(values)),
-                    "std_nmse": float(np.std(values)),
-                    "n_trials": args.n_trials,
-                }
-                rows.append(row)
-                print(
-                    f"SNR={snr_db:>5g} dB  Nd={n_data:>5d}  "
-                    f"{name:<15} mean={row['mean_nmse']:.6g} std={row['std_nmse']:.3g}"
-                )
+                for name, values in totals.items():
+                    row = {
+                        "snr_db": snr_db,
+                        "n_data": n_data,
+                        "variant": name,
+                        "mean_nmse": float(np.mean(values)),
+                        "std_nmse": float(np.std(values)),
+                        "n_trials": args.n_trials,
+                    }
+                    rows.append(row)
+                    tqdm.write(
+                        f"SNR={snr_db:>5g} dB  Nd={n_data:>5d}  "
+                        f"{name:<15} mean={row['mean_nmse']:.6g} std={row['std_nmse']:.3g}"
+                    )
 
     if args.output_csv is not None:
         output_path = Path(args.output_csv)
