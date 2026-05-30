@@ -9,6 +9,18 @@ version = "0.1.0"
 build-backend = "hatchling.build"
 requires = ["hatchling"]
 
+[tool.hatch.build.targets.wheel]
+packages = ["src/gram_diff_mimo"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/README.md",
+  "/pyproject.toml",
+  "/src",
+  "/examples",
+  "/tests",
+]
+
 [tool.pixi.workspace]
 channels = ["conda-forge"]
 platforms = ["linux-64"]
