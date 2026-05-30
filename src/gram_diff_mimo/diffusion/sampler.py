@@ -51,9 +51,17 @@ def gram_diff_guided_step(
     )
     gram_update = lambda_gram * g_gram
     if gram_clip_norm is not None:
-        gram_update_norm = np.linalg.norm(gram_update)
-        if gram_update_norm > gram_clip_norm:
-            gram_update = gram_update * (gram_clip_norm / (gram_update_norm + 1e-12))
+        if gram_update.ndim == 2:
+            gram_update_norm = np.linalg.norm(gram_update)
+            if gram_update_norm > gram_clip_norm:
+                gram_update = gram_update * (gram_clip_norm / (gram_update_norm + 1e-12))
+        else:
+            gram_update_norm = np.linalg.norm(
+                gram_update.reshape(gram_update.shape[0], -1),
+                axis=1,
+            )
+            scale = np.minimum(1.0, gram_clip_norm / (gram_update_norm + 1e-12))
+            gram_update = gram_update * scale[:, None, None]
 
     return denoised_step + lambda_like * g_like + gram_update
 

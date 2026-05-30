@@ -31,6 +31,21 @@ def test_least_squares_recovers_channel_with_identity_pilots_zero_noise():
     assert np.allclose(H_ls, H)
 
 
+def test_least_squares_recovers_batched_channels_with_identity_pilots_zero_noise():
+    H = np.stack(
+        [
+            generate_rayleigh_channel(4, 4),
+            generate_rayleigh_channel(4, 4),
+        ],
+    )
+    X_p = identity_pilots(4)
+    Y_p, _ = mimo_observation(H, X_p, noise_variance=0.0)
+
+    H_ls = least_squares_from_pilots(Y_p, X_p)
+
+    assert np.allclose(H_ls, H)
+
+
 def test_angular_pilot_observation_matches_fft_of_channel_zero_noise():
     H = generate_rayleigh_channel(4, 4)
     X_p = identity_pilots(4)
@@ -111,6 +126,31 @@ def test_variance_normalize_angular_observation():
 
 def test_gram_diff_channel_estimate_runs_end_to_end_with_zero_noise_denoiser():
     H = generate_rayleigh_channel(4, 4)
+    X_p = identity_pilots(4)
+    Y_p, _ = mimo_observation(H, X_p, noise_variance=0.0)
+
+    H_hat = gram_diff_channel_estimate(
+        Y_p=Y_p,
+        Y_d=None,
+        X_p=X_p,
+        noise_variance=3.0,
+        denoiser=ZeroNoiseDenoiser(),
+        alpha_bar=np.array([0.25]),
+        betas=np.array([0.75]),
+        lambda_like=0.0,
+        lambda_gram=0.0,
+    )
+
+    assert np.allclose(H_hat, H)
+
+
+def test_gram_diff_channel_estimate_runs_batched_with_zero_noise_denoiser():
+    H = np.stack(
+        [
+            generate_rayleigh_channel(4, 4),
+            generate_rayleigh_channel(4, 4),
+        ],
+    )
     X_p = identity_pilots(4)
     Y_p, _ = mimo_observation(H, X_p, noise_variance=0.0)
 

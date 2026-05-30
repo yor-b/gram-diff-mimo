@@ -13,6 +13,7 @@ __pycache__/
 experiments/
 outputs/
 checkpoints/
+results/
 
 # VS Code
 .vscode/

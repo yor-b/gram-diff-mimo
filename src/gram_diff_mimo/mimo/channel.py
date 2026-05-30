@@ -21,6 +21,16 @@ def generate_rayleigh_channel(n_rx: int, n_tx: int) -> np.ndarray:
     """
     return complex_normal((n_rx, n_tx), variance=1.0)
 
+
+def generate_rayleigh_channels(
+    batch_size: int,
+    n_rx: int,
+    n_tx: int,
+) -> np.ndarray:
+    """Generate a batch of i.i.d. Rayleigh fading MIMO channels."""
+    return complex_normal((batch_size, n_rx, n_tx), variance=1.0)
+
+
 def mimo_observation(
     h: np.ndarray,
     x: np.ndarray,
@@ -34,10 +44,11 @@ def mimo_observation(
     Parameters
     ----------
     h : np.ndarray
-        Channel matrix of shape (n_rx, n_tx)
+        Channel matrix of shape (..., n_rx, n_tx)
 
     x : np.ndarray
-        Transmit signal matrix of shape (n_tx, n_symbols)
+        Transmit signal matrix of shape (n_tx, n_symbols) or
+        (..., n_tx, n_symbols)
 
     noise_variance : float
         Complex noise variance E[|z|^2]
@@ -50,11 +61,8 @@ def mimo_observation(
     z : np.ndarray
         Noise realization
     """
-    z = complex_normal(
-        (h.shape[0], x.shape[1]),
-        variance=noise_variance,
-    )
-
-    y = h @ x + z
+    noiseless = np.matmul(h, x)
+    z = complex_normal(noiseless.shape, variance=noise_variance)
+    y = noiseless + z
 
     return y, z

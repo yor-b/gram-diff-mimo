@@ -67,6 +67,24 @@ def test_gram_guidance_pushes_toward_larger_target_gram():
 
     assert np.allclose(guidance, 4.0 * np.eye(2))
 
+
+def test_gram_guidance_supports_batched_channels():
+    H_tilde_t = np.stack(
+        [
+            np.eye(2, dtype=np.complex128),
+            2.0 * np.eye(2, dtype=np.complex128),
+        ],
+    )
+    R_tilde_hat = H_tilde_t @ H_tilde_t.conj().swapaxes(-1, -2)
+
+    guidance = gram_guidance(
+        H_tilde_t=H_tilde_t,
+        R_tilde_hat=R_tilde_hat,
+    )
+
+    assert np.allclose(guidance, np.zeros_like(H_tilde_t))
+
+
 def test_ddim_denoise_step_with_zero_noise():
     H_tilde_t = np.ones((2, 2), dtype=np.complex128)
     predicted_noise = np.zeros_like(H_tilde_t)
@@ -122,6 +140,42 @@ def test_gram_diff_guided_step_clips_gram_update_norm():
     )
 
     assert np.isclose(np.linalg.norm(H_prev - H_tilde_t), 1.0)
+
+
+def test_gram_diff_guided_step_clips_each_batched_gram_update_norm():
+    H_tilde_t = np.stack(
+        [
+            np.eye(2, dtype=np.complex128),
+            np.eye(2, dtype=np.complex128),
+        ],
+    )
+    predicted_noise = np.zeros_like(H_tilde_t)
+    Y_tilde = H_tilde_t.copy()
+    R_tilde_hat = np.stack(
+        [
+            2.0 * np.eye(2, dtype=np.complex128),
+            3.0 * np.eye(2, dtype=np.complex128),
+        ],
+    )
+
+    H_prev = gram_diff_guided_step(
+        H_tilde_t=H_tilde_t,
+        Y_tilde=Y_tilde,
+        R_tilde_hat=R_tilde_hat,
+        predicted_noise=predicted_noise,
+        alpha_bar_t=1.0,
+        alpha_bar_prev=1.0,
+        noise_variance=1.0,
+        lambda_like=0.0,
+        lambda_gram=1.0,
+        gram_clip_norm=1.0,
+    )
+
+    update_norms = np.linalg.norm(
+        (H_prev - H_tilde_t).reshape(H_tilde_t.shape[0], -1),
+        axis=1,
+    )
+    assert np.allclose(update_norms, np.ones(2))
 
 
 def test_gram_diff_guided_sample_calls_denoiser_over_reverse_steps():

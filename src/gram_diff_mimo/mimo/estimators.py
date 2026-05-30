@@ -26,7 +26,10 @@ def least_squares_from_pilots(
     """
     pilot_gram = X_p @ X_p.conj().T
     matched_observations = Y_p @ X_p.conj().T
-    return np.linalg.solve(pilot_gram.T, matched_observations.T).T
+    return np.linalg.solve(
+        pilot_gram.T,
+        matched_observations.swapaxes(-1, -2),
+    ).swapaxes(-1, -2)
 
 def angular_pilot_observation(
     Y_p: np.ndarray,
@@ -38,12 +41,15 @@ def angular_pilot_observation(
 
 def project_psd(matrix: np.ndarray) -> np.ndarray:
     """Project a Hermitian matrix onto the positive semidefinite cone."""
-    hermitian = 0.5 * (matrix + matrix.conj().T)
+    hermitian = 0.5 * (matrix + matrix.conj().swapaxes(-1, -2))
 
     eigenvalues, eigenvectors = np.linalg.eigh(hermitian)
     eigenvalues_clipped = np.maximum(eigenvalues, 0.0)
 
-    return eigenvectors @ np.diag(eigenvalues_clipped) @ eigenvectors.conj().T
+    return (
+        (eigenvectors * eigenvalues_clipped[..., None, :])
+        @ eigenvectors.conj().swapaxes(-1, -2)
+    )
 
 
 def estimate_receive_gram_from_data(
@@ -62,9 +68,10 @@ def estimate_receive_gram_from_data(
     Therefore:
         R_hat = (1 / N_d) Y_d Y_d^H - sigma^2 I
     """
-    n_rx, n_data = Y_d.shape
+    n_rx = Y_d.shape[-2]
+    n_data = Y_d.shape[-1]
 
-    sample_cov = (Y_d @ Y_d.conj().T) / n_data
+    sample_cov = (Y_d @ Y_d.conj().swapaxes(-1, -2)) / n_data
     gram_estimate = sample_cov - noise_variance * np.eye(n_rx)
 
     if project:
@@ -79,8 +86,8 @@ def angular_receive_gram(R_hat: np.ndarray) -> np.ndarray:
     R_tilde = Phi_r R Phi_r^H
     """
     return np.fft.fft(
-        np.fft.ifft(R_hat, axis=1, norm="ortho"),
-        axis=0,
+        np.fft.ifft(R_hat, axis=-1, norm="ortho"),
+        axis=-2,
         norm="ortho",
     )
 
@@ -171,7 +178,8 @@ def gram_diff_channel_estimate(
 
     if R_tilde_hat is None:
         if Y_d is None:
-            R_tilde_hat = np.zeros((Y_p.shape[0], Y_p.shape[0]), dtype=Y_p.dtype)
+            R_tilde_shape = (*Y_p.shape[:-2], Y_p.shape[-2], Y_p.shape[-2])
+            R_tilde_hat = np.zeros(R_tilde_shape, dtype=Y_p.dtype)
             lambda_gram = 0.0
         else:
             R_tilde_hat = estimate_angular_receive_gram_from_data(

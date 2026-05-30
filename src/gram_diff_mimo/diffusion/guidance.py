@@ -31,7 +31,7 @@ def gram_guidance(
     R_tilde_hat: np.ndarray,
 ) -> np.ndarray:
     """Compute Gram matrix guidance direction."""
-    current_gram = H_tilde_t @ H_tilde_t.conj().T
+    current_gram = H_tilde_t @ H_tilde_t.conj().swapaxes(-1, -2)
     return 4.0 * (R_tilde_hat - current_gram) @ H_tilde_t
 
 def ddim_denoise_step(
