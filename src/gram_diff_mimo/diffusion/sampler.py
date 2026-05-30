@@ -67,9 +67,9 @@ def gram_diff_guided_step(
 
 
 def _scheduled_value(value: float | np.ndarray, timestep: int) -> float:
-    if np.isscalar(value):
-        return float(value)
-    return float(np.asarray(value)[timestep])
+    if isinstance(value, np.ndarray):
+        return float(value[timestep])
+    return float(value)
 
 
 def gram_diff_guided_sample(
