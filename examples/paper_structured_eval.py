@@ -18,6 +18,8 @@ import csv
 import os
 from pathlib import Path
 
+from tqdm import tqdm
+
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 import matplotlib
 
@@ -224,6 +226,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--likelihood-gate-delta", type=float, default=1.0)
     parser.add_argument("--output-csv", default=None)
     parser.add_argument("--plot-dir", default=None)
+    parser.add_argument(
+        "--progress",
+        action="store_true",
+        help="Show progress bar for batched evaluation.",
+    )
     return parser.parse_args()
 
 
@@ -240,48 +247,55 @@ def main() -> None:
     rows: list[dict[str, str | int | float]] = []
     n_rx, n_tx = 64, 16
     X_p = identity_pilots(n_tx)
+    total_batches = (
+        len(snr_db_values)
+        * len(n_data_values)
+        * ((args.n_trials + args.batch_size - 1) // args.batch_size)
+    )
 
-    for snr_db in snr_db_values:
-        noise_variance = 10.0 ** (-snr_db / 10.0)
-        for n_data in n_data_values:
-            totals: dict[str, list[float]] = {}
-            for start in range(0, args.n_trials, args.batch_size):
-                current_batch_size = min(args.batch_size, args.n_trials - start)
-                H = generate_rayleigh_channels(
-                    batch_size=current_batch_size,
-                    n_rx=n_rx,
-                    n_tx=n_tx,
-                )
-                Y_p, _ = mimo_observation(
-                    h=H,
-                    x=X_p,
-                    noise_variance=noise_variance,
-                )
-                X_d = data_symbols(
-                    batch_size=current_batch_size,
-                    n_tx=n_tx,
-                    n_data=n_data,
-                )
-                Y_d, _ = mimo_observation(
-                    h=H,
-                    x=X_d,
-                    noise_variance=noise_variance,
-                )
-                trial = estimate_variants(
-                    H=H,
-                    Y_p=Y_p,
-                    Y_d=Y_d,
-                    X_p=X_p,
-                    noise_variance=noise_variance,
-                    denoiser=denoiser,
-                    lambda_like=args.lambda_like,
-                    lambda_gram=args.lambda_gram,
-                    gram_clip_norm=args.gram_clip_norm,
-                    likelihood_gate_snr0=args.likelihood_gate_snr0,
-                    likelihood_gate_delta=args.likelihood_gate_delta,
-                )
-                for name, value in trial.items():
-                    totals.setdefault(name, []).extend(value.tolist())
+    with tqdm(total=total_batches, unit="batch", disable=not args.progress) as progress:
+        for snr_db in snr_db_values:
+            noise_variance = 10.0 ** (-snr_db / 10.0)
+            for n_data in n_data_values:
+                totals: dict[str, list[float]] = {}
+                for start in range(0, args.n_trials, args.batch_size):
+                    current_batch_size = min(args.batch_size, args.n_trials - start)
+                    H = generate_rayleigh_channels(
+                        batch_size=current_batch_size,
+                        n_rx=n_rx,
+                        n_tx=n_tx,
+                    )
+                    Y_p, _ = mimo_observation(
+                        h=H,
+                        x=X_p,
+                        noise_variance=noise_variance,
+                    )
+                    X_d = data_symbols(
+                        batch_size=current_batch_size,
+                        n_tx=n_tx,
+                        n_data=n_data,
+                    )
+                    Y_d, _ = mimo_observation(
+                        h=H,
+                        x=X_d,
+                        noise_variance=noise_variance,
+                    )
+                    trial = estimate_variants(
+                        H=H,
+                        Y_p=Y_p,
+                        Y_d=Y_d,
+                        X_p=X_p,
+                        noise_variance=noise_variance,
+                        denoiser=denoiser,
+                        lambda_like=args.lambda_like,
+                        lambda_gram=args.lambda_gram,
+                        gram_clip_norm=args.gram_clip_norm,
+                        likelihood_gate_snr0=args.likelihood_gate_snr0,
+                        likelihood_gate_delta=args.likelihood_gate_delta,
+                    )
+                    for name, value in trial.items():
+                        totals.setdefault(name, []).extend(value.tolist())
+                    progress.update(1)
 
             for name, values in totals.items():
                 row = {
